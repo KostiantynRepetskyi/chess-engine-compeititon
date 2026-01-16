@@ -1,0 +1,47 @@
+# --- OS Metadata ---
+.DS_Store
+Thumbs.db
+
+# --- IDEs ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+# Virtual Environment
+venv/
+.venv/
+env/
+# Build/Dist
+dist/
+build/
+*.egg-info/
+
+# --- C++ ---
+build/
+_build/
+bin/
+out/
+.cache/
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+Makefile
+
+# --- Binaries & Libraries ---
+# Comment these when shared libraries are usable
+# bindings/*.dll
+# bindings/*.so
+# bindings/*.dylib
+
+# --- Testing ---
+test_detail.xml
+
+# GUI
+imgui.ini
