@@ -52,15 +52,7 @@ BLACK_TO_MOVE = 1
 
 
 @njit
-def _has_piece(occupancy_bb, sq):
-    
-    #True if bitboard has a piece on sq (0..63).
-    
-    return (occupancy_bb & (np.int64(1) << np.int64(sq))) != 0
-
-
-@njit
-def _handle_white_pawn(sq, white_pawn_count, white_pawn_min_rank, white_score, endgame_score_adjustment):
+def _handle_white_pawn(board_pieces, sq, white_pawn_count, white_pawn_min_rank, white_score, endgame_score_adjustment):
     f = (sq % 8) + 1
     r = sq // 8
     white_pawn_count[f] += 1
@@ -78,66 +70,69 @@ def _handle_white_pawn(sq, white_pawn_count, white_pawn_min_rank, white_score, e
 
 
 @njit
-def _knight_defends(board_occupancy, sq, defended_pieces, colour_idx):
+def _knight_defends(board_pieces, sq, defended_pieces, colour):
     f = sq % 8
     r = sq // 8
-    friend_occ = board_occupancy[colour_idx]
+   
     for i, j in ((1, 2), (2, 1), (2, -1), (1, -2), (-1, -2), (-2, -1), (-2, 1), (-1, 2)):
         new_f = f + i
         new_r = r + j
         if 0 <= new_f <= 7 and 0 <= new_r <= 7:
             idx = new_r * 8 + new_f
-            if _has_piece(friend_occ, idx):
+            piece = bt.get_piece(board_pieces, idx)
+            if piece != 0 and piece * colour > 0:
                 defended_pieces[idx] = 1
 
 
 @njit
-def _king_defends(board_occupancy, sq, defended_pieces, colour_idx):
+def _king_defends(board_pieces, sq, defended_pieces, colour):
     f = sq % 8
     r = sq // 8
-    friend_occ = board_occupancy[colour_idx]
     for i, j in ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1),  (1, 0),  (1, 1)):
         new_f = f + i
         new_r = r + j
         if 0 <= new_f <= 7 and 0 <= new_r <= 7:
             new_idx = new_r * 8 + new_f
-            if _has_piece(friend_occ, new_idx):
+            piece = bt.get_piece(board_pieces, new_idx)
+            if piece != 0 and piece * colour > 0:
                 defended_pieces[new_idx] = 1
 
 
 @njit
-def _pawn_defends(board_occupancy, sq, defended_pieces, colour_idx):
-    friend_occ = board_occupancy[colour_idx]
+def _pawn_defends(board_pieces, sq, defended_pieces, colour):
+    
     f = sq % 8
     r = sq // 8
-    if colour_idx == 0:
+    if colour == 1:
         if r < 7:
             if f > 0:
                 idx = sq + 7
-                if _has_piece(friend_occ, idx):
+                piece = bt.get_piece(board_pieces, idx)
+                if piece != 0 and piece > 0:
                     defended_pieces[idx] = 1
             if f < 7:
                 idx = sq + 9
-                if _has_piece(friend_occ, idx):
+                piece = bt.get_piece(board_pieces, idx)
+                if piece != 0 and piece > 0:
                     defended_pieces[idx] = 1
     else:
         if r > 0:
             if f > 0:
                 idx = sq - 9
-                if _has_piece(friend_occ, idx):
+                piece = bt.get_piece(board_pieces, idx)
+                if piece != 0 and piece < 0:
                     defended_pieces[idx] = 1
             if f < 7:
                 idx = sq - 7
-                if _has_piece(friend_occ, idx):
+                piece = bt.get_piece(board_pieces, idx)
+                if piece != 0 and piece < 0:
                     defended_pieces[idx] = 1
 
 
 @njit
-def _rook_defends(board_occupancy, sq, defended_pieces, colour_idx):
+def _rook_defends(board_pieces, sq, defended_pieces, colour):
     f0 = sq % 8
     r0 = sq // 8
-    occ_all = board_occupancy[2]
-    friend_occ = board_occupancy[colour_idx]
     for df, dr in ((1, 0), (-1, 0), (0, 1), (0, -1)):
         for k in range(1, 8):
             f = f0 + df * k
@@ -145,15 +140,16 @@ def _rook_defends(board_occupancy, sq, defended_pieces, colour_idx):
             if f < 0 or f > 7 or r < 0 or r > 7:
                 break
             idx = r * 8 + f
-            if _has_piece(occ_all, idx):
-                if _has_piece(friend_occ, idx):
+            piece = bt.get_piece(board_pieces, idx)
+            if piece != 0:
+                if piece * colour > 0:
                     defended_pieces[idx] = 1
                 break
 
 
 @njit
-def _handle_white_knight(board_pieces, board_occupancy, sq, white_score, defended_pieces):
-    _knight_defends(board_occupancy, sq, defended_pieces, 0)
+def _handle_white_knight(board_pieces, sq, white_score, defended_pieces):
+    #_knight_defends(board_pieces, sq, defended_pieces, 1)
     if sq < 8:
         white_score -= 10
     else:
@@ -163,12 +159,10 @@ def _handle_white_knight(board_pieces, board_occupancy, sq, white_score, defende
 
 
 @njit
-def _bishop_visible_empty_squares(board_occupancy, sq, defended_pieces, colour_idx):
+def _bishop_visible_empty_squares(board_pieces, sq, defended_pieces, colour):
     f = sq % 8
     r = sq // 8
     visible_empty_squares = 0
-    occ_all = board_occupancy[2]
-    friend_occ = board_occupancy[colour_idx]
 
     for i, j in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
         for k in range(1, 8):
@@ -176,8 +170,9 @@ def _bishop_visible_empty_squares(board_occupancy, sq, defended_pieces, colour_i
                 break
 
             idx = (r + j * k) * 8 + f + i * k
-            if _has_piece(occ_all, idx):
-                if _has_piece(friend_occ, idx):
+            piece = bt.get_piece(board_pieces, idx)
+            if piece != 0:
+                if piece * colour > 0:
                     defended_pieces[idx] = 1 # also check if the bishop defends this piece
                 break
             visible_empty_squares += 1
@@ -186,19 +181,19 @@ def _bishop_visible_empty_squares(board_occupancy, sq, defended_pieces, colour_i
 
 
 @njit
-def _handle_white_bishop(board_pieces, board_occupancy, sq, white_score, defended_pieces):
+def _handle_white_bishop(board_pieces, sq, white_score, defended_pieces):
     if sq < 8:
         white_score -= 10
 
-    visible_empty_squares = _bishop_visible_empty_squares(board_occupancy, sq, defended_pieces, 0)
+    visible_empty_squares = _bishop_visible_empty_squares(board_pieces, sq, defended_pieces, 1)
     white_score += visible_empty_squares * 2
     white_score += BISHOP_WHITE
     return white_score
 
 
 @njit
-def _handle_white_rook(board_pieces, board_occupancy, sq, white_score, defended_pieces):
-    _rook_defends(board_occupancy, sq, defended_pieces, 0)
+def _handle_white_rook(board_pieces, sq, white_score, defended_pieces):
+    #_rook_defends(board_pieces, sq, defended_pieces, 1)
     if 48 <= sq <= 55:
         white_score += 10
 
@@ -222,15 +217,16 @@ def _handle_white_rook(board_pieces, board_occupancy, sq, white_score, defended_
 
 
 @njit
-def _handle_white_queen(board_pieces, board_occupancy, sq, white_score, defended_pieces):
-    _rook_defends(board_occupancy, sq, defended_pieces, 0)
-    _bishop_visible_empty_squares(board_occupancy, sq, defended_pieces, 0)
+def _handle_white_queen(board_pieces, sq, white_score, defended_pieces):
+    
+    #_rook_defends(board_pieces, sq, defended_pieces, 1)
+    #_bishop_visible_empty_squares(board_pieces, sq, defended_pieces, 1)
     return white_score + QUEEN_WHITE
 
 
 @njit
-def _handle_white_king(board_pieces, board_occupancy, sq, white_score, endgame_score_adjustment, defended_pieces):
-    _king_defends(board_occupancy, sq, defended_pieces, 0)
+def _handle_white_king(board_pieces, sq, white_score, endgame_score_adjustment, defended_pieces):
+    #_king_defends(board_pieces, sq, defended_pieces, 1)
     white_score += KING_WHITE
     endgame_score_adjustment += KING_CENTER_CONTROL[sq]
 
@@ -260,8 +256,8 @@ def _handle_black_pawn(sq, black_pawn_count, black_pawn_max_rank, black_score, e
 
 
 @njit
-def _handle_black_knight(board_pieces, board_occupancy, sq, black_score, defended_pieces):
-    _knight_defends(board_occupancy, sq, defended_pieces, 1)
+def _handle_black_knight(board_pieces, sq, black_score, defended_pieces):
+    #_knight_defends(board_pieces, sq, defended_pieces, -1)
     if sq > 55:
         black_score += 10
     else:
@@ -271,19 +267,19 @@ def _handle_black_knight(board_pieces, board_occupancy, sq, black_score, defende
 
 
 @njit
-def _handle_black_bishop(board_pieces, board_occupancy, sq, black_score, defended_pieces):
+def _handle_black_bishop(board_pieces, sq, black_score, defended_pieces):
     if sq > 55:
         black_score += 10
 
-    visible_empty_squares = _bishop_visible_empty_squares(board_occupancy, sq, defended_pieces, 1)
+    visible_empty_squares = _bishop_visible_empty_squares(board_pieces, sq, defended_pieces, -1)
     black_score -= visible_empty_squares * 2
     black_score += BISHOP_BLACK
     return black_score
 
 
 @njit
-def _handle_black_rook(board_pieces, board_occupancy, sq, black_score, defended_pieces):
-    _rook_defends(board_occupancy, sq, defended_pieces, 1)
+def _handle_black_rook(board_pieces, sq, black_score, defended_pieces):
+    #_rook_defends(board_pieces, sq, defended_pieces, -1)
     if 8 <= sq <= 15:
         black_score -= 20
 
@@ -307,15 +303,15 @@ def _handle_black_rook(board_pieces, board_occupancy, sq, black_score, defended_
 
 
 @njit
-def _handle_black_queen(board_pieces, board_occupancy, sq, black_score, defended_pieces):
-    _rook_defends(board_occupancy, sq, defended_pieces, 1)
-    _ = _bishop_visible_empty_squares(board_occupancy, sq, defended_pieces, 1)
+def _handle_black_queen(board_pieces, sq, black_score, defended_pieces):
+    #_rook_defends(board_pieces, sq, defended_pieces, -1)
+    _ = _bishop_visible_empty_squares(board_pieces, sq, defended_pieces, -1)
     return black_score + QUEEN_BLACK
 
 
 @njit
-def _handle_black_king(board_pieces, board_occupancy, sq, black_score, endgame_score_adjustment, defended_pieces):
-    _king_defends(board_occupancy, sq, defended_pieces, 1)
+def _handle_black_king(board_pieces, sq, black_score, endgame_score_adjustment, defended_pieces):
+    #_king_defends(board_pieces, sq, defended_pieces, -1)
     endgame_score_adjustment -= KING_CENTER_CONTROL[sq]
     black_score += KING_BLACK
 
@@ -449,7 +445,7 @@ def evaluation_function(board_pieces, board_occupancy, side_to_move):
 
 
         if piece_id == bt.WHITE_PAWN: 
-            _pawn_defends(board_occupancy, sq, defended_pieces, 0)
+            #_pawn_defends(board_pieces, sq, defended_pieces, 1)
             white_score, endgame_score_adjustment = _handle_white_pawn(
                 sq, white_pawn_count, white_pawn_min_rank, white_score, endgame_score_adjustment
             )
@@ -460,7 +456,7 @@ def evaluation_function(board_pieces, board_occupancy, side_to_move):
 
 
         elif piece_id == bt.WHITE_KNIGHT:  
-            white_score = _handle_white_knight(board_pieces, board_occupancy, sq, white_score, defended_pieces)
+            white_score = _handle_white_knight(board_pieces, sq, white_score, defended_pieces)
 
 
 
@@ -468,14 +464,14 @@ def evaluation_function(board_pieces, board_occupancy, side_to_move):
 
 
         elif piece_id == bt.WHITE_BISHOP:  
-            white_score = _handle_white_bishop(board_pieces, board_occupancy, sq, white_score, defended_pieces)
+            white_score = _handle_white_bishop(board_pieces, sq, white_score, defended_pieces)
 
 
 
 
 
         elif piece_id == bt.WHITE_ROOK:  
-            white_score = _handle_white_rook(board_pieces, board_occupancy, sq, white_score, defended_pieces)
+            white_score = _handle_white_rook(board_pieces, sq, white_score, defended_pieces)
 
 
 
@@ -483,7 +479,7 @@ def evaluation_function(board_pieces, board_occupancy, side_to_move):
 
 
         elif piece_id == bt.WHITE_QUEEN:
-            white_score = _handle_white_queen(board_pieces, board_occupancy, sq, white_score, defended_pieces)
+            white_score = _handle_white_queen(board_pieces, sq, white_score, defended_pieces)
 
 
 
@@ -492,7 +488,7 @@ def evaluation_function(board_pieces, board_occupancy, side_to_move):
 
         elif piece_id == bt.WHITE_KING:        
             white_score, endgame_score_adjustment = _handle_white_king(
-                board_pieces, board_occupancy, sq, white_score, endgame_score_adjustment, defended_pieces
+                board_pieces, sq, white_score, endgame_score_adjustment, defended_pieces
             )
 
 
@@ -500,7 +496,7 @@ def evaluation_function(board_pieces, board_occupancy, side_to_move):
 
 
         elif piece_id == bt.BLACK_PAWN:        
-            _pawn_defends(board_occupancy, sq, defended_pieces, 1)
+            #_pawn_defends(board_pieces, sq, defended_pieces, -1)
             black_score, endgame_score_adjustment = _handle_black_pawn(
                 sq, black_pawn_count, black_pawn_max_rank, black_score, endgame_score_adjustment
             )
@@ -511,7 +507,7 @@ def evaluation_function(board_pieces, board_occupancy, side_to_move):
 
 
         elif piece_id == bt.BLACK_KNIGHT:  
-            black_score = _handle_black_knight(board_pieces, board_occupancy, sq, black_score, defended_pieces)
+            black_score = _handle_black_knight(board_pieces, sq, black_score, defended_pieces)
 
 
 
@@ -519,7 +515,7 @@ def evaluation_function(board_pieces, board_occupancy, side_to_move):
 
 
         elif piece_id == bt.BLACK_BISHOP:  
-            black_score = _handle_black_bishop(board_pieces, board_occupancy, sq, black_score, defended_pieces)
+            black_score = _handle_black_bishop(board_pieces, sq, black_score, defended_pieces)
         
 
 
@@ -527,7 +523,7 @@ def evaluation_function(board_pieces, board_occupancy, side_to_move):
 
 
         elif piece_id == bt.BLACK_ROOK:    
-            black_score = _handle_black_rook(board_pieces, board_occupancy, sq, black_score, defended_pieces)
+            black_score = _handle_black_rook(board_pieces, sq, black_score, defended_pieces)
 
 
 
@@ -535,7 +531,7 @@ def evaluation_function(board_pieces, board_occupancy, side_to_move):
 
 
         elif piece_id == bt.BLACK_QUEEN:
-            black_score = _handle_black_queen(board_pieces, board_occupancy, sq, black_score, defended_pieces)
+            black_score = _handle_black_queen(board_pieces, sq, black_score, defended_pieces)
 
 
 
@@ -544,7 +540,7 @@ def evaluation_function(board_pieces, board_occupancy, side_to_move):
 
         elif piece_id == bt.BLACK_KING:    
             black_score, endgame_score_adjustment = _handle_black_king(
-                board_pieces, board_occupancy, sq, black_score, endgame_score_adjustment, defended_pieces
+                board_pieces, sq, black_score, endgame_score_adjustment, defended_pieces
             )
 
 
@@ -560,7 +556,7 @@ def evaluation_function(board_pieces, board_occupancy, side_to_move):
 
     score += _pawn_structure_adjustment(white_pawn_count, black_pawn_count, white_pawn_min_rank, black_pawn_max_rank)
 
-    score += _loose_pieces_adjustment(board_pieces, defended_pieces)
+    #score += _loose_pieces_adjustment(board_pieces, defended_pieces)
         
         
 
