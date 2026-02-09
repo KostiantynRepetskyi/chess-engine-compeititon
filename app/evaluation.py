@@ -52,7 +52,7 @@ BLACK_TO_MOVE = 1
 
 
 @njit
-def _handle_white_pawn(board_pieces, sq, white_pawn_count, white_pawn_min_rank, white_score, endgame_score_adjustment):
+def _handle_white_pawn(sq, white_pawn_count, white_pawn_min_rank, white_score, endgame_score_adjustment):
     f = (sq % 8) + 1
     r = sq // 8
     white_pawn_count[f] += 1
