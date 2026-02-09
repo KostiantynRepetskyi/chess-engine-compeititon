@@ -53,9 +53,9 @@ BLACK_TO_MOVE = 1
 
 @njit
 def _has_piece(occupancy_bb, sq):
-    """
-    True if bitboard has a piece on sq (0..63).
-    """
+    
+    #True if bitboard has a piece on sq (0..63).
+    
     return (occupancy_bb & (np.int64(1) << np.int64(sq))) != 0
 
 
