@@ -1,18 +1,8 @@
-
-    
-
-
-
-
-
-
-
 import board_tools as bt
 import numpy as np
 from numba import njit, int64, int32, uint32, uint64
 
-# --- bitboard iteration helper (Numba-friendly) ---
-# de Bruijn bit-scan for 64-bit: index of isolated least-significant 1-bit
+
 _DEBRUIJN64 = np.uint64(0x03F79D71B4CB0A89)
 _INDEX64 = np.array([
     0, 1, 48, 2, 57, 49, 28, 3,
@@ -92,6 +82,211 @@ BLACK_TO_MOVE = 1
 
 
 
+@njit(cache=True)
+def bishop_visibility(sq, occ_all, occ_opp):
+    """
+    Count squares a bishop can 'see' from sq along diagonals.
+
+    Preserves the previous inline behavior:
+    - Empty squares count.
+    - If the first blocker is an enemy piece, that square also counts (+1) and the ray stops.
+    - If the first blocker is a friendly piece, it does not count and the ray stops.
+    """
+    f0 = sq & 7
+    r0 = sq >> 3
+    visible = 0
+
+    for df, dr in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
+        for k in range(1, 8):
+            ff = f0 + df * k
+            rr = r0 + dr * k
+            if ff > 7 or ff < 0 or rr > 7 or rr < 0:
+                break
+            target_sq = rr * 8 + ff
+            ray_mask = np.uint64(1) << np.uint64(target_sq)
+            if occ_all & ray_mask:
+                if occ_opp & ray_mask:
+                    visible += 1
+                break
+            visible += 1
+
+    return visible
+
+
+@njit(cache=True)
+def eval_white_pawn(sq, white_pawn_count):
+    endgame_delta = 20
+    r = sq >> 3
+    f = (sq & 7) + 1
+    white_pawn_count[f] += 1
+
+    center = CENTER_CONTROL[sq]
+    white_delta = center + PAWN_WHITE
+
+    endgame_delta -= center
+    endgame_delta += r * 2
+    return white_delta, endgame_delta
+
+
+@njit(cache=True)
+def eval_white_knight(sq):
+    if sq < 8:
+        return KNIGHT_WHITE - 10
+    return KNIGHT_WHITE + CENTER_CONTROL[sq]
+
+
+@njit(cache=True)
+def eval_white_bishop(sq, occ_all, occ_black):
+    white_delta = BISHOP_WHITE
+
+    if sq < 8:
+        white_delta -= 10
+
+    vis = bishop_visibility(sq, occ_all, occ_black)
+    if vis > 6:
+        white_delta += 10
+    elif sq > 31 and vis < 3:
+        white_delta -= 100
+
+    return white_delta
+
+
+@njit(cache=True)
+def eval_white_rook(sq, board_pieces):
+    white_delta = ROOK_WHITE
+    endgame_delta = 0
+
+    if 48 <= sq <= 55:
+        white_delta += 15
+
+    if sq < 8:
+        black_pawn_block = False
+        white_pawn_block = False
+
+        for i in range(sq + 8, 64, 8):
+            imask = np.uint64(1) << np.uint64(i)
+            if np.uint64(board_pieces[6]) & imask:
+                black_pawn_block = True
+            elif np.uint64(board_pieces[0]) & imask:
+                white_pawn_block = True
+
+        if not white_pawn_block:
+            white_delta += 10
+            if not black_pawn_block:
+                white_delta += 10
+            else:
+                endgame_delta += 10
+
+    return white_delta, endgame_delta
+
+
+@njit(cache=True)
+def eval_white_queen():
+    return QUEEN_WHITE
+
+
+@njit(cache=True)
+def eval_white_king(sq, board_pieces, mask7):
+    white_delta = KING_WHITE
+    endgame_delta = KING_CENTER_CONTROL[sq]
+
+    if sq == 6 and (np.uint64(board_pieces[3]) & mask7) == 0:
+        white_delta += 10
+        endgame_delta -= 10
+    elif sq != 4:
+        white_delta -= 15
+        endgame_delta += 15
+
+    return white_delta, endgame_delta
+
+
+@njit(cache=True)
+def eval_black_pawn(sq, black_pawn_count):
+    endgame_delta = -20
+    r = sq >> 3
+    f = (sq & 7) + 1
+    black_pawn_count[f] += 1
+
+    center = CENTER_CONTROL[sq]
+    black_delta = (-center) + PAWN_BLACK
+
+    endgame_delta += center
+    endgame_delta -= (7 - r) * 2
+    return black_delta, endgame_delta
+
+
+@njit(cache=True)
+def eval_black_knight(sq):
+    if sq > 55:
+        return KNIGHT_BLACK + 10
+    return KNIGHT_BLACK - CENTER_CONTROL[sq]
+
+
+@njit(cache=True)
+def eval_black_bishop(sq, occ_all, occ_white):
+    black_delta = BISHOP_BLACK
+
+    if sq > 55:
+        black_delta += 10
+
+    vis = bishop_visibility(sq, occ_all, occ_white)
+    if vis > 6:
+        black_delta -= 10
+    elif sq < 32 and vis < 3:
+        black_delta += 100
+
+    return black_delta
+
+
+@njit(cache=True)
+def eval_black_rook(sq, board_pieces):
+    black_delta = ROOK_BLACK
+    endgame_delta = 0
+
+    if 8 <= sq <= 15:
+        black_delta -= 15
+
+    if sq > 55:
+        black_pawn_block = False
+        white_pawn_block = False
+
+        for i in range(sq - 8, -1, -8):
+            imask = np.uint64(1) << np.uint64(i)
+            if np.uint64(board_pieces[6]) & imask:
+                black_pawn_block = True
+            elif np.uint64(board_pieces[0]) & imask:
+                white_pawn_block = True
+
+        if not black_pawn_block:
+            black_delta -= 10
+            if not white_pawn_block:
+                black_delta -= 10
+            else:
+                endgame_delta -= 10
+
+    return black_delta, endgame_delta
+
+
+@njit(cache=True)
+def eval_black_queen():
+    return QUEEN_BLACK
+
+
+@njit(cache=True)
+def eval_black_king(sq, board_pieces, mask63):
+    black_delta = KING_BLACK
+    endgame_delta = -KING_CENTER_CONTROL[sq]
+
+    if sq == 62 and (np.uint64(board_pieces[9]) & mask63) == 0:
+        black_delta -= 10
+        endgame_delta += 10
+    elif sq != 50:
+        black_delta += 15
+        endgame_delta -= 15
+
+    return black_delta, endgame_delta
+
+
 @njit(int32(int64[:], int64[:], uint32))
 def evaluation_function(board_pieces, board_occupancy, side_to_move):
     """
@@ -139,16 +334,9 @@ def evaluation_function(board_pieces, board_occupancy, side_to_move):
            
 
             if piece_idx == 0:  # white pawn
-                endgame_score_adjustment += 20
-                r = sq >> 3
-                f = (sq & 7) + 1
-                white_pawn_count[f] += 1
-
-                white_score += CENTER_CONTROL[sq]
-                white_score += PAWN_WHITE
-
-                endgame_score_adjustment -= CENTER_CONTROL[sq]
-                endgame_score_adjustment += r * 2
+                wd, ed = eval_white_pawn(sq, white_pawn_count)
+                white_score += wd
+                endgame_score_adjustment += ed
 
 
 
@@ -157,44 +345,14 @@ def evaluation_function(board_pieces, board_occupancy, side_to_move):
 
 
             elif piece_idx == 1:  # white knight
-                if sq < 8:
-                    white_score -= 10
-                else:
-                    white_score += CENTER_CONTROL[sq]
-                white_score += KNIGHT_WHITE
+                white_score += eval_white_knight(sq)
 
 
 
 
 
             elif piece_idx == 2:  # white bishop
-                if sq < 8:
-                    white_score -= 10
-
-                f0 = sq & 7
-                r0 = sq >> 3
-                visible_empty_squares = 0
-
-                for i, j in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
-                    for k in range(1, 8):
-                        ff = f0 + i * k
-                        rr = r0 + j * k
-                        if ff > 7 or ff < 0 or rr > 7 or rr < 0:
-                            break
-                        target_sq = rr * 8 + ff
-                        ray_mask = np.uint64(1) << np.uint64(target_sq)
-                        if occ_all & ray_mask:
-                            if occ_black & ray_mask:
-                                visible_empty_squares += 1
-                            break
-                        visible_empty_squares += 1
-
-                if visible_empty_squares > 6:
-                    white_score += 10
-                elif sq > 31 and visible_empty_squares < 3:
-                    white_score -= 100
-
-                white_score += BISHOP_WHITE
+                white_score += eval_white_bishop(sq, occ_all, occ_black)
 
 
 
@@ -203,28 +361,9 @@ def evaluation_function(board_pieces, board_occupancy, side_to_move):
 
 
             elif piece_idx == 3:  # white rook
-                if 48 <= sq <= 55:
-                    white_score += 15
-
-                if sq < 8:
-                    black_pawn_block = False
-                    white_pawn_block = False
-
-                    for i in range(sq + 8, 64, 8):
-                        imask = np.uint64(1) << np.uint64(i)
-                        if np.uint64(board_pieces[6]) & imask:
-                            black_pawn_block = True
-                        elif np.uint64(board_pieces[0]) & imask:
-                            white_pawn_block = True
-
-                    if not white_pawn_block:
-                        white_score += 10
-                        if not black_pawn_block:
-                            white_score += 10
-                        else:
-                            endgame_score_adjustment += 10
-
-                white_score += ROOK_WHITE
+                wd, ed = eval_white_rook(sq, board_pieces)
+                white_score += wd
+                endgame_score_adjustment += ed
 
 
 
@@ -235,7 +374,7 @@ def evaluation_function(board_pieces, board_occupancy, side_to_move):
 
             elif piece_idx == 4:  # white queen
                 white_queen = True
-                white_score += QUEEN_WHITE
+                white_score += eval_white_queen()
 
 
 
@@ -244,15 +383,9 @@ def evaluation_function(board_pieces, board_occupancy, side_to_move):
 
 
             elif piece_idx == 5:  # white king
-                white_score += KING_WHITE
-                endgame_score_adjustment += KING_CENTER_CONTROL[sq]
-
-                if sq == 6 and (np.uint64(board_pieces[3]) & mask7) == 0:
-                    white_score += 10
-                    endgame_score_adjustment -= 10
-                elif sq != 4:
-                    white_score -= 15
-                    endgame_score_adjustment += 15
+                wd, ed = eval_white_king(sq, board_pieces, mask7)
+                white_score += wd
+                endgame_score_adjustment += ed
 
 
 
@@ -262,16 +395,9 @@ def evaluation_function(board_pieces, board_occupancy, side_to_move):
 
 
             elif piece_idx == 6:  # black pawn
-                endgame_score_adjustment -= 20
-                r = sq >> 3
-                f = (sq & 7) + 1
-                black_pawn_count[f] += 1
-
-                black_score -= CENTER_CONTROL[sq]
-                black_score += PAWN_BLACK
-
-                endgame_score_adjustment += CENTER_CONTROL[sq]
-                endgame_score_adjustment -= (7 - r) * 2
+                bd, ed = eval_black_pawn(sq, black_pawn_count)
+                black_score += bd
+                endgame_score_adjustment += ed
 
 
 
@@ -282,11 +408,7 @@ def evaluation_function(board_pieces, board_occupancy, side_to_move):
 
 
             elif piece_idx == 7:  # black knight
-                if sq > 55:
-                    black_score += 10
-                else:
-                    black_score -= CENTER_CONTROL[sq]
-                black_score += KNIGHT_BLACK
+                black_score += eval_black_knight(sq)
 
 
 
@@ -297,33 +419,7 @@ def evaluation_function(board_pieces, board_occupancy, side_to_move):
 
 
             elif piece_idx == 8:  # black bishop
-                if sq > 55:
-                    black_score += 10
-
-                f0 = sq & 7
-                r0 = sq >> 3
-                visible_empty_squares = 0
-
-                for i, j in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
-                    for k in range(1, 8):
-                        ff = f0 + i * k
-                        rr = r0 + j * k
-                        if ff > 7 or ff < 0 or rr > 7 or rr < 0:
-                            break
-                        target_sq = rr * 8 + ff
-                        ray_mask = np.uint64(1) << np.uint64(target_sq)
-                        if occ_all & ray_mask:
-                            if occ_white & ray_mask:
-                                visible_empty_squares += 1
-                            break
-                        visible_empty_squares += 1
-
-                if visible_empty_squares > 6:
-                    black_score -= 10
-                elif sq < 32 and visible_empty_squares < 3:
-                    black_score += 100
-
-                black_score += BISHOP_BLACK
+                black_score += eval_black_bishop(sq, occ_all, occ_white)
 
 
 
@@ -334,28 +430,9 @@ def evaluation_function(board_pieces, board_occupancy, side_to_move):
 
 
             elif piece_idx == 9:  # black rook
-                if 8 <= sq <= 15:
-                    black_score -= 15
-
-                if sq > 55:
-                    black_pawn_block = False
-                    white_pawn_block = False
-
-                    for i in range(sq - 8, -1, -8):
-                        imask = np.uint64(1) << np.uint64(i)
-                        if np.uint64(board_pieces[6]) & imask:
-                            black_pawn_block = True
-                        elif np.uint64(board_pieces[0]) & imask:
-                            white_pawn_block = True
-
-                    if not black_pawn_block:
-                        black_score -= 10
-                        if not white_pawn_block:
-                            black_score -= 10
-                        else:
-                            endgame_score_adjustment -= 10
-
-                black_score += ROOK_BLACK
+                bd, ed = eval_black_rook(sq, board_pieces)
+                black_score += bd
+                endgame_score_adjustment += ed
 
 
 
@@ -367,7 +444,7 @@ def evaluation_function(board_pieces, board_occupancy, side_to_move):
 
             elif piece_idx == 10:  # black queen
                 black_queen = True
-                black_score += QUEEN_BLACK
+                black_score += eval_black_queen()
 
 
 
@@ -378,15 +455,9 @@ def evaluation_function(board_pieces, board_occupancy, side_to_move):
 
 
             else:  # piece_idx == 11: black king
-                endgame_score_adjustment -= KING_CENTER_CONTROL[sq]
-                black_score += KING_BLACK
-
-                if sq == 62 and (np.uint64(board_pieces[9]) & mask63) == 0:
-                    black_score -= 10
-                    endgame_score_adjustment += 10
-                elif sq != 50:
-                    black_score += 15
-                    endgame_score_adjustment -= 15
+                bd, ed = eval_black_king(sq, board_pieces, mask63)
+                black_score += bd
+                endgame_score_adjustment += ed
 
 
 
